@@ -23,6 +23,29 @@ from utils import visualization_utils_changed as vis_util
 from threading import Thread
 
 #####################################################################################
+#GLOBALS
+
+sys.path.append("..")
+
+MODEL_NAME = 'ssd_mobilenet_v1_coco_11_06_2017'
+# Path to frozen detection graph. This is the actual model that is used for the object detection.
+PATH_TO_CKPT = MODEL_NAME + '/frozen_inference_graph.pb'
+# List of the strings that is used to add correct label for each box.
+PATH_TO_LABELS = os.path.join('data', 'mscoco_label_map.pbtxt')
+
+im_width = 1280
+im_height = 720
+frame_counter = 0
+threshold_frame = 90
+move_cam = False
+has_moved = False
+NUM_CLASSES = 90
+find_or_not = False
+sampling_counter = 0
+delay_time = 0.02
+
+#####################################################################################
+#
 
 class FPS:
     def __init__(self):
@@ -55,28 +78,9 @@ class FPS:
         # compute the (approximate) frames per second
         return self._numFrames / self.elapsed()
 
-#####################################################################################
-#GLOBALS
-
-sys.path.append("..")
-
-MODEL_NAME = 'ssd_mobilenet_v1_coco_11_06_2017'
-# Path to frozen detection graph. This is the actual model that is used for the object detection.
-PATH_TO_CKPT = MODEL_NAME + '/frozen_inference_graph.pb'
-# List of the strings that is used to add correct label for each box.
-PATH_TO_LABELS = os.path.join('data', 'mscoco_label_map.pbtxt')
-
-im_width = 1280
-im_height = 720
-frame_counter = 0
-threshold_frame = 90
-move_cam = False
-has_moved = False
-NUM_CLASSES = 90
-find_or_not = False
-sampling_counter = 0
 
 #####################################################################################
+#
 
 class VideoGet(object):
     """
@@ -104,6 +108,7 @@ class VideoGet(object):
         self.stopped = True
 
 #####################################################################################
+#
 
 class VideoShow(object):
     """
@@ -115,7 +120,6 @@ class VideoShow(object):
         self.stopped = False
         self.detection_graph = detection_graph
         self.ptz = ptz
-
 
     def start(self):
         Thread(target=self.show, args=(), daemon=True).start()
@@ -130,9 +134,10 @@ class VideoShow(object):
           cv2.imshow("Video", self.frame)
           #if frame_counter % 1 == 0:
           if not self.stopped:
-            find_or_not, left, right, top, bottom = make_pred(self.frame, detection_graph)
-            #has_moved = CenterPerson(left, right, top, bottom, im_width, im_height, ptz)
-            has_moved = self.start_moving(left, right, top, bottom)
+            _, left, right, top, bottom = make_pred(self.frame, detection_graph)
+            #An important delay because the camera will move around too much
+            if frame_counter % 2 == 0:
+                self.start_moving(left, right, top, bottom)
           self.draw(left, right, top, bottom)
           if cv2.waitKey(1) == ord("q"):
               self.stopped = True
@@ -160,22 +165,23 @@ class VideoShow(object):
             left = xmin * im_width
         """
         centered = True
-        delay_time = 0
-        width = np.abs(left - right )
-        height = np.abs(top - bottom )
+        #width = np.abs(left - right )
+        #height = np.abs(top - bottom )
         logging.info("Thread %s: starting")
 
-        if right > (im_width * 0.9):  
+        if right > (im_width * 0.85):  
             print("Going right : \nright: ",right, (im_width * 0.9), '******\n')
             ptz.pan(Direction='right', Steps=1, Speed=1)
             time.sleep(delay_time)
+            ptz.pan(Direction='stop', Steps=1, Speed=1)
             print("Movement has finished.")
             centered = False
 
-        if left < (im_width * 0.1):
+        if left < (im_width * 0.15):
             print("Going left : \nleft: ", left, (im_width * 0.1), '******\n')
             ptz.pan(Direction='left', Steps=1, Speed=1)
             time.sleep(delay_time)
+            ptz.pan(Direction='stop', Steps=1, Speed=1)
             print("Movement has finished.")
             centered = False
 
@@ -183,6 +189,7 @@ class VideoShow(object):
 #   print("Going Down : \ntop: ", bottom, (im_height * 0.9), '\n******\n')
 #   ptz.pan(Direction='down', Steps=1, Speed=1)
 #   time.sleep(delay_time)
+#   ptz.pan(Direction='stop', Steps=1, Speed=1)
 #   has_completed_once = True
 #   print("Movement has finished.")
 #   centered = False
@@ -191,6 +198,7 @@ class VideoShow(object):
 #   print("Going Up : \ntop: ", top, (im_height * 0.9), '\n******\n')
 #   ptz.pan(Direction='up', Steps=1, Speed=1)
 #   time.sleep(delay_time)
+#   ptz.pan(Direction='stop', Steps=1, Speed=1)
 #   has_completed_once = True
 #   print("Movement has finished.")
 #   centered = False
@@ -216,42 +224,24 @@ class VideoShow(object):
             has_completed_once = True
 
 
-        
 
 #####################################################################################
+#CREATE PTZ OBJECT
 
 def setup_ptz(Camera_IP, Camera_User, Camera_PW):
   print("Loading Camera and setting up Pan-Tilt-Zoom commands...")
   ptz = PTZ_commands(Camera_User, Camera_PW, Camera_IP)
   return ptz
 
-def threadedBoth(ptz, detection_graph):
-  """
-  This thread is dedicated to getting video frames.
-  """
-  video_getter = VideoGet(ptz.rtsp).start()
-  video_show = VideoShow(video_getter.frame, detection_graph, ptz).start()
-
-  left, right, top, bottom = 0,0,0,0
-  while True:
-    if video_getter.stopped or video_show.stopped:
-      video_show.stop()
-      video_getter.stop()
-      break
-
-
-    frame = video_getter.frame
-    video_show.frame = frame
-
-
 #####################################################################################
+#OBJECT DETECTION PREDICTION
 
-# Expand dimensions since the model expects images to have shape: [1, None, None, 3]
 def make_pred(image_np, detection_graph):
   start_time = time.time()
   
   flag = False
   image_np_expanded = np.expand_dims(image_np, axis=0)
+  # Expand dimensions since the model expects images to have shape: [1, None, None, 3]
   image_tensor = detection_graph.get_tensor_by_name('image_tensor:0')
   # Each box represents a part of the image where a particular object was detected.
   boxes = detection_graph.get_tensor_by_name('detection_boxes:0')
@@ -266,6 +256,7 @@ def make_pred(image_np, detection_graph):
     feed_dict={image_tensor: image_np_expanded})
   time_diff = round(time.time() - start_time)
   print("It took:", (time_diff % 60), "seconds, to run a prediction using", MODEL_NAME)
+
   #If the Person score is above some threshold and is the best class then compute bbox and move
   if scores[0][0] > 0.5 and np.argmax(scores) == 0 :
     print("Person found...")
@@ -280,28 +271,31 @@ def make_pred(image_np, detection_graph):
         use_normalized_coordinates=True,
         line_thickness=8)
     (left, right, top, bottom) = (xmin * im_width, xmax * im_width, ymin * im_height, ymax * im_height)
+
     return flag, left, right, top, bottom
+
   else:
+
     print("No Person found searching for humans...")
     left, right, top, bottom = 0, 0, 0, 0
     flag = True
 
-  
     return flag, left, right, top, bottom
 
 #####################################################################################
+#RANDOM MOVEMENT
+#Borrowed from ipcam_utils.py 
 
-#Borrowed from ipcam_utils 
 def findPerson(ptz):
 
   has_completed_once = False
-  delay_time = 10
   random_move = randint(1,6)
 
   if random_move == 1:
     print("Going right\n")
     ptz.pan(Direction='right', Steps=1, Speed=1)
     time.sleep(delay_time)
+    ptz.pan(Direction='stop', Steps=1, Speed=1)
     has_completed_once = True
     print("Movement has finished.")
 
@@ -309,6 +303,7 @@ def findPerson(ptz):
     print("Going left\n")
     ptz.pan(Direction='left', Steps=1, Speed=1)
     time.sleep(delay_time)
+    ptz.pan(Direction='stop', Steps=1, Speed=1)
     has_completed_once = True
     print("Movement has finished.")
 
@@ -316,6 +311,7 @@ def findPerson(ptz):
     print("Going Down\n")
     ptz.pan(Direction='down', Steps=1, Speed=1)
     time.sleep(delay_time)
+    ptz.pan(Direction='stop', Steps=1, Speed=1)
     has_completed_once = True
     print("Movement has finished.")
 
@@ -323,6 +319,7 @@ def findPerson(ptz):
     print("Going Up\n")
     ptz.pan(Direction='up', Steps=1, Speed=1)
     time.sleep(delay_time)
+    ptz.pan(Direction='stop', Steps=1, Speed=1)
     has_completed_once = True
     print("Movement has finished.")
 
@@ -330,6 +327,7 @@ def findPerson(ptz):
     print("Horizontal Scan\n")
     ptz.pan(Direction='hscan', Steps=1, Speed=1)
     time.sleep(delay_time)
+    ptz.pan(Direction='stop', Steps=1, Speed=1)
     has_completed_once = True
     print("Movement has finished.")
 
@@ -337,12 +335,14 @@ def findPerson(ptz):
     print("Vertical Scan\n")
     ptz.pan(Direction='vscan', Steps=1, Speed=1)
     time.sleep(delay_time)
+    ptz.pan(Direction='stop', Steps=1, Speed=1)
     has_completed_once = True
     print("Movement has finished.")
 
   return has_completed_once
 
 #####################################################################################
+#Loads model from TF API
 
 def open_model(Model_name):
   print("Opening....", Model_name)
@@ -356,7 +356,28 @@ def open_model(Model_name):
     if 'frozen_inference_graph.pb' in file_name:
       tar_file.extract(file, os.getcwd())
 
+
 #####################################################################################
+#THREADER 
+
+def threadedBoth(ptz, detection_graph):
+  """
+  This thread is dedicated to getting video frames.
+  """
+  video_getter = VideoGet(ptz.rtsp).start()
+  video_show = VideoShow(video_getter.frame, detection_graph, ptz).start()
+
+  left, right, top, bottom = 0,0,0,0
+  while True:
+    if video_getter.stopped or video_show.stopped:
+      video_show.stop()
+      video_getter.stop()
+      break
+    frame = video_getter.frame
+    video_show.frame = frame
+
+#####################################################################################
+#Load Model/ setup PTZ
 
 if __name__ == '__main__':
 
@@ -376,7 +397,6 @@ if __name__ == '__main__':
 
 #####################################################################################
 #Load Graph
-#To do: Thread the camera instructions, thread the prediction bounding box with the live stream
 
   start = time.time()
   print("Setting up graph....")
@@ -395,6 +415,7 @@ if __name__ == '__main__':
   print( "It took:", (time_diff % 60), "seoncds, to load graph and label map.")
 
 #####################################################################################
+#Begin prediction/threading
 
   with detection_graph.as_default():
     with tf.Session(graph=detection_graph) as sess:
