@@ -214,7 +214,7 @@ class Camera(object):
     def startStream(self):
         """
         start stream via rtsp
-        rtsp://admin:linaro@10.32.100.175:554/11
+        rtsp://<user>:<pw>@10.32.100.175:554/11
         """
         self.video
         cv2.imshow('object detection', cv2.resize(self.imshowIMG, (800,600)))
